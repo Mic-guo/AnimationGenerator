@@ -1,0 +1,388 @@
+import bpy
+from bpy.props import StringProperty, IntProperty, BoolProperty, EnumProperty
+from bpy.types import Scene, WindowManager
+from dataclasses import dataclass
+from enum import Enum 
+
+#Import other files
+import sys
+import os 
+
+#Import local scripts
+dir = os.path.dirname(bpy.data.filepath)
+if not dir in sys.path:
+    sys.path.append(dir)
+
+import animation
+import DeleteObject
+import testRowColStart
+
+import importlib
+importlib.reload(animation)
+importlib.reload(DeleteObject)
+importlib.reload(testRowColStart)
+
+from animation import *
+
+class Color(Enum):
+    White = 1
+    Yellow = 2
+    Red = 3
+    Black = 4
+
+@dataclass
+class LedSection():
+    row: int
+    col: int
+    start: int
+    end: int
+    vert: bool
+    reverse: bool
+    color: Color
+    difSize: bool
+    optionalSize: int
+
+############################################
+# Name        : update_properties
+# Called by   : RowData objects
+# Parameters  : self, context
+# Returns     : N/A
+# Description : Makes sure LED end is larger than LED start 
+#               for each checkbox and then flipped if the reverse check is ticked
+############################################
+def update_properties(self, context):
+    if self.reverse:
+        if self.end > self.start:
+            self.end = self.start
+    else:
+        if self.end < self.start:
+            self.end = self.start
+
+############################################
+# Name        : update_optional
+# Called by   : RowData objects
+# Parameters  : self, context
+# Returns     : N/A
+# Description : Makes sure new size chosen is larger than 
+#               the original size of the led strip (end - start)
+############################################
+def update_optional(self, context):
+    if self.difSize:
+        if self.optionalSize < abs(self.end - self.start):
+            self.optionalSize = abs(self.end - self.start)
+
+class RowData(bpy.types.PropertyGroup):
+    index: IntProperty(name="Box index", min=0)
+    start: IntProperty(name="Start Column", min=0, update=update_properties)
+    end: IntProperty(name="End Column", min=0, update=update_properties)
+    vert: BoolProperty(name="Vertical", default=False)
+    reverse: BoolProperty(name="Reverse", default=False)
+    color: EnumProperty(name="Color", 
+                        description="Select a color",
+                        items= [
+                            ('op1', "White", ""),
+                            ('op2', "Yellow", ""),
+                            ('op3', "Red", "")
+                        ]
+                    )
+    difSize: BoolProperty(name="Different Size", default=False)
+    optionalSize: IntProperty(name="New size (Must be larger than start to end)", min=0, update=update_optional)
+
+# Operator to add a new row
+class AddRowOperator(bpy.types.Operator):
+    bl_idname = "object.add_row_operator"
+    bl_label = "Add Indices"
+    
+    ############################################
+    # Name        : execute
+    # Called by   : Panel add checkbox label button
+    # Parameters  : self, context
+    # Returns     : 'FINISHED'
+    # Description : Create a new row object with a unique StringProperty
+    ############################################
+    def execute(self, context):
+        context.scene.row_data.add()
+        return {'FINISHED'}
+
+# Operator to remove the last row
+class RemoveRowOperator(bpy.types.Operator):
+    bl_idname = "object.remove_row_operator"
+    bl_label = "Remove Indices"
+    
+    ############################################
+    # Name        : execute
+    # Called by   : Panel remove checkbox label button
+    # Parameters  : self, context
+    # Returns     : 'FINISHED'
+    # Description : Remove the last row object from the row_data list
+    ############################################
+    def execute(self, context):
+        if context.scene.row_data:
+            context.scene.row_data.remove(len(context.scene.row_data) - 1)
+        return {'FINISHED'}
+
+############################################
+# Name        : draw_func
+# Called by   : OBJECT_PT_LED_Panel - line 234
+# Parameters  : self, context
+# Returns     : none
+# Description : Creates the UI for the panel 'LED Animation' 
+#               and allows for user to run animation program
+############################################
+def draw_func(self, context):
+    layout = self.layout
+    scene = context.scene
+    confirmInfo = scene.confirmRowCol
+    
+    split1 = layout.split(align=True)
+    filePathLabel = split1.column()
+    filePathLabel.label(text="Enter file path to excel document: ")
+    stringInputField = split1.column()
+    stringInputField.prop(scene, "filePathName")
+    split = layout.split()
+    sheetNumberLabel = split.column()
+    sheetNumberLabel.label(text="Enter the exact animation sheet name: ")
+    slider = split.column()
+    slider.prop(scene, "sheetName")
+    
+    layout.operator("wm.pop_up_test")
+    
+    if not scene.showInput:
+        return None
+    
+    split = layout.split()
+    sheetNumberLabel = split.column()
+    sheetNumberLabel.label(text="Starting row for the LED data: ")
+    slider = split.column()
+    slider.label(text=f"{confirmInfo.startRow}")
+    
+    split = layout.split()
+    sheetNumberLabel = split.column()
+    sheetNumberLabel.label(text="Starting column for the LED data: ")
+    slider = split.column()
+    slider.label(text=f"{confirmInfo.startCol}")
+    
+    box = layout.box()
+    row_box = box.row(align=True)
+    label = row_box.label(text="Please indicate how the LEDs are aligned")
+    num_true = 0
+    
+    for row in range(5):
+        row_box = box.row()
+        row_box.label(text="")
+        for col in range(5):
+            index = row * 5 + col
+            row_box.prop(scene, "ledMatrix", index=index, text="")
+            if scene.ledMatrix[index]:
+                num_true += 1
+                scene.indices.append((row, col))
+        row_box.label(text="")
+    
+    layout.prop(scene, "visualColNum")
+    
+    num_created = 0
+    # Rebuild the layout based on user input
+    for i, row in enumerate(context.scene.row_data):
+        rowLay = layout.box()
+        rowLay.label(text=f"Checkbox {i+1}")
+        split = rowLay.split(factor=0.25)
+        if i >= len(scene.indices):
+            split.prop(row, "index")
+        else:
+            split.label(text=f"Row: {scene.indices[i][0]}, Col: {scene.indices[i][1]}")
+        split.prop(row, "start")
+        split.prop(row, "end")
+        split.prop(row, "difSize")
+        if row.difSize:
+            row3 = rowLay.row()
+            row3.prop(row, "optionalSize")
+        row2 = rowLay.row()
+        row2.prop(row, "vert")
+        row2.prop(row, "reverse")
+        row2.prop(row, "color")
+        num_created += 1
+        
+    num_already_created = len(scene.indices)
+    
+    # Add button row
+    layout.separator()
+    row = layout.row(align=True)
+
+    if num_created < num_already_created:
+        layout.label(text=f"You need to create a total of {num_true} checkboxes")
+        row.operator("object.add_row_operator", text="Add Checkbox Label")
+    if context.scene.row_data:
+        row.operator("object.remove_row_operator", text="Remove Checkbox Label")
+    if num_true == 0:
+        box = layout.box()
+        row = box.row()
+        for i in range(3):
+            row.label(text="", icon='BLANK1')
+        row.label(text="Please select atleast 1 of the above boxes for LED alignment")
+    elif num_created == num_true:
+        layout.operator("wm.pop_up_menu")
+    else: 
+        box = layout.box()
+        row = box.row()
+        for i in range(2):
+            row.label(text="", icon='BLANK1')
+        row.label(text="Number of checkbox labels must match the number of checked boxes in matrix")
+
+# Custom panel class
+class OBJECT_PT_LED_Panel(bpy.types.Panel):
+    bl_idname = "OBJECT_PT_LED_Panel"
+    bl_label = "LED Creation"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'LED Animation'
+    print("\n\n\nNEW TEST\n\n\n")
+    ############################################
+    # Name        : draw
+    # Called by   : called when program is run
+    # Parameters  : self, context
+    # Returns     : none
+    # Description : Draw the panel UI
+    ############################################
+    def draw(self, context):
+        context.scene.indices.clear()
+        draw_func(self, context)
+
+# Custom operator class to show the popup dialog
+class popUpMenu(bpy.types.Operator):
+    bl_idname = "wm.pop_up_menu"
+    bl_label = "Execute Animation"
+    
+    ############################################
+    # Name        : invoke
+    # Called by   : Panel UI 'Execute Animation' button
+    # Parameters  : self, context, event
+    # Returns     : confirmation popup
+    # Description : Acts as a confirmation button for the user to confirm 
+    #               that they finished inputting necessary input
+    ############################################
+    def invoke(self, context, event):
+        print("Popup Dialog \n\n\n")
+        return context.window_manager.invoke_props_dialog(self)
+
+    ############################################
+    # Name        : execute
+    # Called by   : Popup UI 'OK' button from execute animation button
+    # Parameters  : self, context
+    # Returns     : 'FINISHED'
+    # Description : Calls the main function in animation.py with the user input
+    ############################################
+    def execute(self, context):
+        scene = context.scene
+        confirmInfo = scene.confirmRowCol
+        
+        ledSections = []
+        for i, row in enumerate(scene.row_data):
+            #SHOULD NEVER BE BLACK OTHERWISE SOME ISSUE IN CHOOSING COLOR
+            color = Color.Black
+            size = 0
+            if row.color == "op1":
+                color = Color.White
+            elif row.color == "op2":
+                color = Color.Yellow
+            else:
+                color = Color.Red
+            
+            if row.difSize:
+                size = row.optionalSize
+            
+            
+            rowStart = row.start
+            rowEnd = row.end
+            if scene.visualColNum:
+                 rowStart -= scene.visualColNum
+                 rowEnd -= scene.visualColNum
+            
+            led_section = LedSection(scene.indices[i][0], scene.indices[i][1], rowStart, rowEnd, row.vert, row.reverse, color, row.difSize, size)
+            ledSections.append(led_section)
+        try:
+            xls_data = pds.read_excel(scene.filePathName, sheet_name=scene.sheetName)
+            #TEST MAIN
+#            test_main(scene.filePathName, scene.sheetNumber, scene.ledRowStart, scene.ledColStart, ledSections)
+            #REAL MAIN
+            main(scene.filePathName, scene.sheetName, confirmInfo.startRow, confirmInfo.startCol, ledSections) 
+        except:
+            pass
+            
+        return {'FINISHED'}
+
+    ############################################
+    # Name        : draw
+    # Called by   : invoke(self, context, event) - line 246
+    # Parameters  : self, context
+    # Returns     : none
+    # Description : Creates the UI for the confirmation popup dialog
+    ############################################
+    def draw(self, context):
+        scene = context.scene
+        layout = self.layout
+        try:
+            xls_data = pds.read_excel(scene.filePathName, sheet_name=scene.sheetName)
+            layout.label(text="Press OK to execute, hit escape key to decline")
+            return None
+        except:
+            layout.label(text="Something went wrong with the file path or sheet name")
+            return None
+
+############################################
+# Name        : register
+# Called by   : Panel Creation line 357
+# Parameters  : N/A
+# Returns     : N/A
+# Description : Register the panel and local scene variables
+############################################
+def register():
+    bpy.utils.register_class(OBJECT_PT_LED_Panel)
+    bpy.utils.register_class(popUpMenu)
+    bpy.utils.register_class(AddRowOperator)
+    bpy.utils.register_class(RemoveRowOperator)
+    bpy.utils.register_class(RowData)
+    
+    Scene.filePathName =  StringProperty(name="")
+    Scene.sheetName = StringProperty(name="")
+    # MAX SIZE OF 32, (6 x 6)
+    Scene.ledMatrix = bpy.props.BoolVectorProperty(name="",
+                                            size=25,
+                                            default=[False] * 25)
+    Scene.indices = []
+    Scene.row_data = bpy.props.CollectionProperty(type=RowData)
+    Scene.showInput = BoolProperty(name="")
+    Scene.visualColNum = IntProperty(name="Enter the starting column number as seen in excel", min=0)
+
+############################################
+# Name        : unregister
+# Called by   : called when blender closes
+# Parameters  : N/A
+# Returns     : N/A
+# Description : Used to clean up space and delete the add-on
+############################################
+def unregister():
+    bpy.utils.unregister_class(OBJECT_PT_LED_Panel)
+    bpy.utils.unregister_class(popUpMenu)
+    bpy.utils.unregister_class(AddRowOperator)
+    bpy.utils.unregister_class(RemoveRowOperator)
+    bpy.utils.unregister_class(RowData)
+
+    del Scene.filePathName 
+    del Scene.sheetName
+    del Scene.ledMatrix
+    del Scene.indices
+    del Scene.row_data
+    del Scene.showInput
+    del Scene.visualColNum
+    
+############################################
+# Name        : main
+# Called by   : Running the program with the play button
+# Parameters  : N/A
+# Returns     : N/A
+# Description : Entry point when running the script directly
+############################################
+if __name__ == "__main__":
+    register()
+    DeleteObject.register()
+    testRowColStart.register()
